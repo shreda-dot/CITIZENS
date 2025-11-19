@@ -216,54 +216,66 @@ const upload = multer({ storage });
 // -----------------------------
 // 1️⃣ CREATE INCIDENT (POST)
 // -----------------------------
-app.post("/incidents", upload.array("images", 5), async (req, res) => {
-    try {
-        const { user_id, title, category, description, location_name, latitude, longitude } = req.body;
+app.post("/api/incidents", upload.array("images", 5), async (req, res) => {
+  try {
+    // Handle multipart form vs JSON
+    let data = req.body;
+    data.images = Array.isArray(req.files) ? req.files.map(f => "/uploads/" + f.filename) : [];
 
-        // Ensure user_id is provided
-        if (!user_id) {
-            return res.status(400).json({ message: "user_id is required" });
-        }
+    const { userId, type, title, description, location, latitude, longitude } = data;
 
-        // Convert uploaded images → array of paths
-        const imagePaths = req.files ? req.files.map(f => "/uploads/" + f.filename) : [];
+    if (!type) return res.status(400).json({ message: "Type required" });
 
-        // Insert into DB
-        const query = `
-        INSERT INTO incidents 
-        (user_id, title, category, description, location_name, latitude, longitude, images)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING *;
-        `;
+    // Prepare Postgres array safely
+    const pgImages = data.images.length > 0
+      ? `{${data.images.map(img => `"${img}"`).join(",")}}`
+      : '{}';
 
-        const values = [
-            user_id,
-            title,
-            category,
-            description,
-            location_name,
-            latitude,
-            longitude,
-            imagePaths
-        ];
+    const result = await pool.query(`
+      INSERT INTO incidents
+      (user_id, type, title, description, location, latitude, longitude, images)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      RETURNING
+        id,
+        user_id AS "userId",
+        type,
+        title,
+        description,
+        location,
+        latitude,
+        longitude,
+        images,
+        created_at AS "createdAt"
+    `, [
+      userId ? parseInt(userId) : null, // convert to integer
+      type,
+      title || "",
+      description || "",
+      location || "",
+      latitude ? parseFloat(latitude) : null,
+      longitude ? parseFloat(longitude) : null,
+      pgImages
+    ]);
 
-        const result = await pool.query(query, values);
-        const newIncident = result.rows[0];
+    const incident = result.rows[0];
 
-        // Broadcast to SSE clients
-        sendSSEToAll({
-            type: "new_incident",
-            data: newIncident
-        });
-
-        return res.json({ success: true, incident: newIncident });
+    // Add userName if userId exists
+    if (incident.userId) {
+      const u = await pool.query("SELECT email FROM users WHERE id=$1 LIMIT 1", [incident.userId]);
+      incident.userName = u.rows[0]?.email || null;
     }
 
-    catch (err) {
-        console.error("INCIDENT CREATE ERROR:", err);
-        return res.status(500).json({ message: "Server error" });
-    }
+    // SSE broadcast
+    broadcastIncident(incident);
+
+    return res.status(201).json(incident);
+
+  } catch (err) {
+    console.error("INCIDENT CREATE ERROR:", err);
+    return res.status(500).json({ message: "Server error", error: err.message });
+  }
 });
+
 
 
 // -----------------------------
