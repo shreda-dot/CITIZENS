@@ -15,187 +15,240 @@ function Home() {
         <>
 
             {(() => {
-               const IncidentApp = () => {
-    const [incidents, setIncidents] = useState([]);
-    const [form, setForm] = useState({
-        type: 'Accident',
-        title: '',
-        description: '',
-        location: '',
-        latitude: '',
-        longitude: ''
-    });
-    const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState('');
-    const [user, setUser] = useState(() => {
-        try { return JSON.parse(localStorage.getItem('user')) || null } catch { return null }
-    });
-    const [filterCategory, setFilterCategory] = useState('All');
-    const [showMine, setShowMine] = useState(false);
-    const [files, setFiles] = useState([]);
-    const [previews, setPreviews] = useState([]);
-    const [toast, setToast] = useState(null);
+                const IncidentApp = () => {
+                    // React hooks: useState imported, other hooks via react.*
+                    const [incidents, setIncidents] = useState([]);
+                    const [form, setForm] = useState({
+                        type: 'Accident',
+                        title: '',
+                        description: '',
+                        location: '',
+                        latitude: '',
+                        longitude: ''
+                    });
+                    const [loading, setLoading] = useState(false);
+                    const [message, setMessage] = useState('');
+                    const [user, setUser] = useState(() => {
+                        try { return JSON.parse(localStorage.getItem('user')) || null } catch { return null }
+                    });
+                    const [filterCategory, setFilterCategory] = useState('All');
+                    const [showMine, setShowMine] = useState(false);
+                    const [files, setFiles] = useState([]); // File objects for upload
+                    const [previews, setPreviews] = useState([]); // preview URLs
+                    const [toast, setToast] = useState(null);
+                    const eventSourceRef = react.useRef(null);
 
-    const eventSourceRef = react.useRef(null);
+                    // small, reusable spinner for buttons and loaders
+                    const Spinner = ({ className = 'w-4 h-4' }) => (
+                        <svg className={`${className} animate-spin`} viewBox="0 0 24 24" fill="none" aria-hidden>
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                        </svg>
+                    );
 
-    // Request notification permission once
-    react.useEffect(() => {
-        if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission().catch(() => {});
-        }
-    }, []);
+                    // Request notification permission once
+                    react.useEffect(() => {
+                        if ('Notification' in window && Notification.permission === 'default') {
+                            Notification.requestPermission().catch(() => {});
+                        }
+                    }, []);
 
-    // Create previews
-    react.useEffect(() => {
-        const urls = files.map(f => URL.createObjectURL(f));
-        setPreviews(urls);
-        return () => urls.forEach(u => URL.revokeObjectURL(u));
-    }, [files]);
+                    // Create previews for selected files
+                    react.useEffect(() => {
+                        const urls = files.map(f => URL.createObjectURL(f));
+                        setPreviews(urls);
+                        return () => {
+                            urls.forEach(u => URL.revokeObjectURL(u));
+                        };
+                    }, [files]);
 
-    // Load + SSE
-    react.useEffect(() => {
-        loadIncidents();
+                    // Load incidents once and set up SSE
+                    react.useEffect(() => {
+                        loadIncidents();
+                        // subscribe to server-sent-events for real-time updates
+                        try {
+                            // Connect to the BASE_URL stream endpoint
+                           const es = new EventSource(`${BASE_URL}/api/incidents/stream`);
+                            eventSourceRef.current = es;
+                            es.onmessage = (ev) => {
+                                try {
+                                    const data = JSON.parse(ev.data);
+                                    setIncidents(prev => [data, ...prev]);
+                                    setToast('New incident added: ' + (data.title || data.type));
+                                    // browser notification if allowed and not by current user
+                                    if (window.Notification && Notification.permission === 'granted' && (!user || data.userId !== user.id)) {
+                                        new Notification('New incident', { body: (data.title || data.type) + ' — ' + (data.location || '') });
+                                    }
+                                    setCount(c => c + 1);
+                                } catch (err) {
+                                    console.error("SSE parse error:", err);
+                                }
+                            };
+                            es.onerror = () => {
+                                setMessage('Realtime connection lost. Updates may be delayed.');
+                            };
+                            return () => {
+                                es.close();
+                            };
+                        } catch (err) {
+                            console.error("SSE connection error:", err);
+                        }
+                        // eslint-disable-next-line react-hooks/exhaustive-deps
+                    }, [user]); // Re-run effect if user changes (for notification check)
 
-        try {
-            const es = new EventSource(`${BASE_URL}/api/incidents/stream`, {
-                withCredentials: false
-            });
+                    const loadIncidents = async () => {
+                        setLoading(true);
+                        setMessage('');
+                        try {
+                            // Use BASE_URL
+                            const res = await fetch(`${BASE_URL}/api/incidents`);
+                            if (!res.ok) throw new Error(await res.text() || res.statusText);
+                            const data = await res.json();
+                            setIncidents(Array.isArray(data) ? data : []);
+                        } catch (err) {
+                            // setMessage('Load failed: ' + err.message);
+                        } finally {
+                            setLoading(false);
+                        }
+                    };
 
-            eventSourceRef.current = es;
+                    const handleChange = (e) => {
+                        const { name, value } = e.target;
+                        setForm(prev => ({ ...prev, [name]: value }));
+                    };
 
-            es.onopen = () => {
-                console.log("SSE connected");
-                setMessage("");
-            };
+                    const captureGeolocation = () => {
+                        if (!navigator.geolocation) {
+                            setMessage('Geolocation not supported by your browser.');
+                            return;
+                        }
+                        navigator.geolocation.getCurrentPosition(
+                            (pos) => {
+                                setForm(prev => ({
+                                    ...prev,
+                                    latitude: String(pos.coords.latitude),
+                                    longitude: String(pos.coords.longitude)
+                                }));
+                                setMessage('Location captured.');
+                            },
+                            (err) => setMessage('Geolocation error: ' + err.message),
+                            { enableHighAccuracy: true, timeout: 10000 }
+                        );
+                    };
 
-            es.onerror = (err) => {
-                console.log("SSE error:", err);
-                setMessage("Realtime connection lost. Updates may be delayed.");
-            };
+                    const handleFileChange = (e) => {
+                        const list = Array.from(e.target.files || []);
+                        setFiles(list.slice(0, 5)); // limit to 5 files
+                    };
 
-            es.onmessage = (ev) => {
-                if (!ev.data || ev.data === "ping") return;
+                    const handleSubmit = async (e) => {
+                        e.preventDefault();
+                        if (!form.title && !form.description) {
+                            setMessage('Please provide a title or description.');
+                            return;
+                        }
+                        setLoading(true);
+                        setMessage('');
+                        try {
+                            let res;
+                            // If there are files, use FormData
+                            if (files.length > 0) {
+                                const fd = new FormData();
+                                fd.append('type', form.type);
+                                fd.append('title', form.title);
+                                fd.append('description', form.description);
+                                fd.append('location', form.location);
+                                if (form.latitude) fd.append('latitude', form.latitude);
+                                if (form.longitude) fd.append('longitude', form.longitude);
+                                if (user?.id) fd.append('userId', user.id);
+                                files.forEach((f, i) => fd.append('images', f, f.name));
+                                res = await fetch(`${BASE_URL}/api/incidents`, { // Use BASE_URL
+                                    method: 'POST',
+                                    body: fd
+                                });
+                            } else {
+                                const payload = { ...form };
+                                if (user?.id) payload.userId = user.id;
+                                res = await fetch(`${BASE_URL}/api/incidents`, { // Use BASE_URL
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(payload)
+                                });
+                            }
 
-                try {
-                    const data = JSON.parse(ev.data);
-                    setIncidents(prev => [data, ...prev]);
-                    setToast("New incident added: " + (data.title || data.type));
+                            if (!res.ok) throw new Error(await res.text() || res.statusText);
+                            const saved = await res.json();
+                            // Note: We don't need to manually update incidents here because the SSE stream
+                            // on the server will send the new incident back to us, updating the state via es.onmessage.
+                            // We'll keep the update here as a fallback in case SSE fails or is slow.
+                            setIncidents(prev => [saved, ...prev]);
+                            
+                            setForm({ type: 'Accident', title: '', description: '', location: '', latitude: '', longitude: '' });
+                            setFiles([]);
+                            setMessage('Incident submitted.');
+                            setToast('Submitted: ' + (saved.title || saved.type));
+                            setCount(c => c + 1);
+                        } catch (err) {
+                            setMessage('Submit failed: ' + err.message);
+                        } finally {
+                            setLoading(false);
+                        }
+                    };
 
-                    if (Notification.permission === "granted" && (!user || user.id !== data.userId)) {
-                        new Notification("New incident", {
-                            body: (data.title || data.type)
-                        });
-                    }
-                } catch {}
-            };
+                    const handleLogin = async (e) => {
+                        e.preventDefault();
+                        const uname = e.target.username?.value;
+                        const pw = e.target.password?.value;
+                        if (!uname || !pw) return setMessage('Provide username & password.');
+                        setLoading(true);
+                        setMessage('');
+                        try {
+                            const res = await fetch(`${BASE_URL}/api/login`, { // Use BASE_URL
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ username: uname, password: pw })
+                            });
+                            if (!res.ok) throw new Error(await res.text() || res.statusText);
+                            const data = await res.json();
+                            setUser(data);
+                            localStorage.setItem('user', JSON.stringify(data));
+                            setMessage('Logged in.');
+                        } catch (err) {
+                            setMessage('Login failed: ' + err.message);
+                        } finally {
+                            setLoading(false);
+                        }
+                    };
 
-            return () => es.close();
-        } catch (err) {
-            console.error("SSE connection failed:", err);
-        }
-    }, [user]);
+                    const handleLogout = async () => {
+                        try {
+                            await fetch(`${BASE_URL}/api/logout`, { method: 'POST' }); // Use BASE_URL
+                        } catch {}
+                        setUser(null);
+                        localStorage.removeItem('user');
+                        // If the user logs out, reset the 'show mine' filter
+                        setShowMine(false); 
+                    };
 
-    const loadIncidents = async () => {
-        setLoading(true);
-        setMessage('');
-        try {
-            const res = await fetch(`${BASE_URL}/api/incidents`);
-            const data = await res.json();
-            setIncidents(Array.isArray(data) ? data : []);
-        } catch (err) {
-            setMessage("Failed to load incidents.");
-        } finally {
-            setLoading(false);
-        }
-    };
+                    // Filtered view
+                    const filtered = incidents.filter(inc => {
+                        if (filterCategory !== 'All' && inc.type !== filterCategory) return false;
+                        // Filter by user ID if 'Show Mine' is checked
+                        if (showMine && user) return inc.userId === user.id;
+                        if (showMine && !user) return false;
+                        return true;
+                    });
 
-    const handleChange = (e) => {
-        setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
-    };
-
-    const captureGeolocation = () => {
-        if (!navigator.geolocation) {
-            return setMessage("Geolocation not supported.");
-        }
-
-        navigator.geolocation.getCurrentPosition(
-            pos => {
-                setForm(prev => ({
-                    ...prev,
-                    latitude: String(pos.coords.latitude),
-                    longitude: String(pos.coords.longitude)
-                }));
-                setMessage("Location captured.");
-            },
-            err => setMessage("Geolocation error: " + err.message),
-            { enableHighAccuracy: true, timeout: 10000 }
-        );
-    };
-
-    const handleFileChange = (e) => {
-        setFiles(Array.from(e.target.files || []).slice(0, 5));
-    };
-
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        
-        if (!form.title && !form.description) {
-            return setMessage("Please enter a title or description.");
-        }
-
-        setLoading(true);
-        setMessage("");
-
-        try {
-            let res;
-
-            if (files.length > 0) {
-                const fd = new FormData();
-                fd.append("type", form.type);
-                fd.append("title", form.title);
-                fd.append("description", form.description);
-                fd.append("location", form.location);
-                if (form.latitude) fd.append("latitude", form.latitude);
-                if (form.longitude) fd.append("longitude", form.longitude);
-                if (user?.id) fd.append("userId", user.id);
-
-                files.forEach(f => fd.append("images", f));
-
-                res = await fetch(`${BASE_URL}/api/incidents`, {
-                    method: "POST",
-                    body: fd
-                });
-
-            } else {
-                res = await fetch(`${BASE_URL}/api/incidents`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        ...form,
-                        userId: user?.id || null
-                    })
-                });
-            }
-
-            if (!res.ok) throw new Error("Server error");
-
-            const saved = await res.json();
-            setIncidents(prev => [saved, ...prev]);
-            setToast("Submitted: " + (saved.title || saved.type));
-            setMessage("Incident submitted.");
-
-            setForm({ type: 'Accident', title: '', description: '', location: '', latitude: '', longitude: '' });
-            setFiles([]);
-
-        } catch (err) {
-            setMessage("Submit failed.");
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Rest of your UI remains EXACTLY the same
-
+                    const formatDate = (d) => {
+                        try {
+                            if (!d) return '';
+                            const dt = new Date(d);
+                            if (isNaN(dt)) return String(d);
+                            return dt.toLocaleString();
+                        } catch {
+                            return String(d);
+                        }
+                    };
 
                     return (
                         <div className="max-w-4xl mx-auto p-4 sm:p-6 bg-gradient-to-br from-slate-50 to-white rounded-xl shadow-md mt-6">
