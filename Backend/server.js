@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
 const path = require("path");
+const multer = require("multer");
 const fs = require("fs");
 
 const app = express();
@@ -196,9 +197,9 @@ app.get("/protected", async (req, res) => {
 // INCIDENT ROUTES
 // =============================
 
-// Multer (for file uploads)
-const multer = require("multer");
-const path = require("path");
+
+
+
 
 // File storage configuration
 const storage = multer.diskStorage({
