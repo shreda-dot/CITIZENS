@@ -5,8 +5,8 @@ const bodyParser = require("body-parser");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
-const path = require("path");
 const multer = require("multer");
+const path = require("path");
 const fs = require("fs");
 
 const app = express();
@@ -70,48 +70,45 @@ app.get("/api/incidents/stream", (req, res) => {
 
 // REGISTER
 app.post("/auth/register", async (req, res) => {
-    const { email, password } = req.body;
-    if (!email || !password)
-        return res.status(400).json({ message: "Email and password are required" });
+  const { email, password } = req.body;
+  if (!email || !password)
+    return res.status(400).json({ message: "Email and password are required" });
 
-    const normalizedEmail = String(email).trim().toLowerCase();
+  const normalizedEmail = String(email).trim().toLowerCase();
 
-    try {
-        // case-insensitive check
-        const existingUser = await pool.query(
-            "SELECT 1 FROM users WHERE lower(email) = $1 LIMIT 1",
-            [normalizedEmail]
-        );
-        if (existingUser.rows.length > 0) {
-            // Inform frontend that email exists so it can keep signup button in default state / not proceed
-            res.setHeader("X-Email-Exists", "true");
-            return res.status(409).json({ exists: true, message: "Email already exists" });
-        }
-
-        const hashedPassword = bcrypt.hashSync(password, 10);
-
-        const newUser = await pool.query(
-            "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email",
-            [normalizedEmail, hashedPassword]
-        );
-
-        const token = jwt.sign(
-            { id: newUser.rows[0].id, email: newUser.rows[0].email },
-            JWT_SECRET,
-            { expiresIn: "1h" }
-        );
-
-        res.status(201).json({ exists: false, token, message: "Registered" });
-    } catch (err) {
-        // handle unique constraint race (in case of concurrent requests)
-        if (err && err.code === "23505") {
-            res.setHeader("X-Email-Exists", "true");
-            return res.status(409).json({ exists: true, message: "Email already exists" });
-        }
-
-        console.error("REGISTER ERROR:", err);
-        res.status(500).json({ message: "Server error" });
+  try {
+    const existingUser = await pool.query(
+      "SELECT 1 FROM users WHERE lower(email) = $1 LIMIT 1",
+      [normalizedEmail]
+    );
+    if (existingUser.rows.length > 0) {
+      const err = new Error("Email already exists");
+      err.code = "EMAIL_EXISTS";
+      throw err;
     }
+
+    const hashedPassword = bcrypt.hashSync(password, 10);
+
+    const newUser = await pool.query(
+      "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email",
+      [normalizedEmail, hashedPassword]
+    );
+
+    const token = jwt.sign(
+      { id: newUser.rows[0].id, email: newUser.rows[0].email },
+      JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    res.status(201).json({ exists: false, token, message: "Registered" });
+  } catch (err) {
+    if (err && (err.code === "EMAIL_EXISTS" || err.code === "23505")) {
+      res.setHeader("X-Email-Exists", "true");
+      return res.status(409).json({ exists: true, message: "Email already exists" });
+    }
+    console.error("REGISTER ERROR:", err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 // LOGIN
@@ -120,19 +117,17 @@ app.post("/auth/login", async (req, res) => {
   if (!email || !password)
     return res.status(400).json({ message: "Email and password required" });
 
+  const normalizedEmail = String(email).trim().toLowerCase();
+
   try {
-    const userQuery = await pool.query("SELECT * FROM users WHERE email=$1", [
-      email,
-    ]);
+    const userQuery = await pool.query("SELECT * FROM users WHERE lower(email) = $1", [normalizedEmail]);
     const user = userQuery.rows[0];
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
     const isMatch = bcrypt.compareSync(password, user.password);
     if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: "1h" });
 
     res.cookie("token", token, {
       httpOnly: true,
@@ -148,187 +143,110 @@ app.post("/auth/login", async (req, res) => {
   }
 });
 
-// HOME PAGE
-app.get("/home", (req, res) => {
-  const message = req.query.message || "";
+// ===========================
+// INCIDENTS ROUTES
+// ===========================
 
-  const rawCookies = req.headers.cookie || "";
-  const cookies = rawCookies.split(";").reduce((acc, cookie) => {
-    const [k, v] = cookie.split("=").map((s) => s && s.trim());
-    if (k && v) acc[k] = decodeURIComponent(v);
-    return acc;
-  }, {});
+// Multer storage
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
-  let userInfo = null;
-  if (cookies.token) {
-    try {
-      userInfo = jwt.verify(cookies.token, JWT_SECRET);
-    } catch {}
-  }
-
-  res.send(`
-    <!doctype html>
-    <html>
-      <head><meta charset="utf-8"><title>Home</title></head>
-      <body>
-        <h1>${message || "Home"}</h1>
-        ${userInfo ? `<p>Welcome back, ${userInfo.email}!</p>` : "<p>You are not signed in.</p>"}
-      </body>
-    </html>
-  `);
-});
-
-// PROTECTED
-app.get("/protected", async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ message: "No token provided" });
-
-  const token = authHeader.split(" ")[1];
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    res.json({ message: "Protected data", user: decoded });
-  } catch {
-    res.status(401).json({ message: "Invalid token" });
-  }
-});
-
-/// =============================
-// INCIDENT ROUTES
-// =============================
-
-
-
-
-
-// File storage configuration
 const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, "uploads/");
-    },
-    filename: function (req, file, cb) {
-        cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + path.extname(file.originalname));
-    }
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, unique + path.extname(file.originalname));
+  },
 });
 
 const upload = multer({ storage });
 
-// -----------------------------
-// 1️⃣ CREATE INCIDENT (POST)
-// -----------------------------
+// CREATE INCIDENT
 app.post("/api/incidents", upload.array("images", 5), async (req, res) => {
   try {
-    // Handle multipart form vs JSON
-    let data = req.body;
-    data.images = Array.isArray(req.files) ? req.files.map(f => "/uploads/" + f.filename) : [];
+    const isMultipart = req.files && req.files.length > 0;
+    let data = isMultipart ? req.body : req.body;
+    data.images = isMultipart ? req.files.map((f) => "/uploads/" + f.filename) : [];
 
     const { userId, type, title, description, location, latitude, longitude } = data;
-
     if (!type) return res.status(400).json({ message: "Type required" });
 
-    // Prepare Postgres array safely
-    const pgImages = data.images.length > 0
-      ? `{${data.images.map(img => `"${img}"`).join(",")}}`
-      : '{}';
+    let pgImages = "{}";
+    if (data.images.length > 0) {
+      pgImages = `{${data.images.map((img) => `"${img}"`).join(",")}}`;
+    }
 
-    const result = await pool.query(`
-      INSERT INTO incidents
+    const incidentQuery = await pool.query(
+      `
+      INSERT INTO incidents 
       (user_id, type, title, description, location, latitude, longitude, images)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-      RETURNING
-        id,
-        user_id AS "userId",
-        type,
-        title,
-        description,
-        location,
-        latitude,
-        longitude,
+      RETURNING 
+        id, 
+        user_id AS "userId", 
+        type, 
+        title, 
+        description, 
+        location, 
+        latitude, 
+        longitude, 
         images,
         created_at AS "createdAt"
-    `, [
-      userId ? parseInt(userId) : null, // convert to integer
-      type,
-      title || "",
-      description || "",
-      location || "",
-      latitude ? parseFloat(latitude) : null,
-      longitude ? parseFloat(longitude) : null,
-      pgImages
-    ]);
+      `,
+      [userId || null, type, title || "", description || "", location || "", latitude || null, longitude || null, pgImages]
+    );
 
-    const incident = result.rows[0];
+    const inc = incidentQuery.rows[0];
 
-    // Add userName if userId exists
-    if (incident.userId) {
-      const u = await pool.query("SELECT email FROM users WHERE id=$1 LIMIT 1", [incident.userId]);
-      incident.userName = u.rows[0]?.email || null;
+    if (inc.userId) {
+      const userQuery = await pool.query("SELECT email FROM users WHERE id=$1 LIMIT 1", [inc.userId]);
+      inc.userName = userQuery.rows[0]?.email || null;
     }
 
     // SSE broadcast
-    broadcastIncident(incident);
+    broadcastIncident(inc);
 
-    return res.status(201).json(incident);
-
+    res.status(201).json(inc);
   } catch (err) {
     console.error("INCIDENT CREATE ERROR:", err);
-    return res.status(500).json({ message: "Server error", error: err.message });
+    res.status(500).json({ message: "Server error" });
   }
 });
 
+// GET INCIDENTS
+app.get("/api/incidents", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, 
+        user_id AS "userId",
+        type, 
+        title, 
+        description, 
+        location, 
+        latitude, 
+        longitude, 
+        images,
+        created_at AS "createdAt"
+      FROM incidents
+      ORDER BY created_at DESC
+    `);
 
+    const incidents = result.rows.map((row) => ({
+      ...row,
+      images: row.images || [],
+    }));
 
-// -----------------------------
-// 2️⃣ GET ALL INCIDENTS (GET)
-// -----------------------------
-app.get("/incidents", async (req, res) => {
-    try {
-        const result = await pool.query(`SELECT * FROM incidents ORDER BY created_at DESC`);
-        return res.json(result.rows);
-    }
-    catch (err) {
-        console.error("INCIDENT FETCH ERROR:", err);
-        res.status(500).json({ message: "Server error" });
-    }
+    res.json(incidents);
+  } catch (err) {
+    console.error("INCIDENT GET ERROR:", err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
-
-// -----------------------------
-// 3️⃣ SSE STREAM (REAL-TIME UPDATES)
-// -----------------------------
-
-// let sseClients = [];
-
-app.get("/events/incidents", (req, res) => {
-    res.set({
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-        "Access-Control-Allow-Origin": "*"
-    });
-
-    res.flushHeaders();
-
-    const client = {
-        id: Date.now(),
-        res
-    };
-
-    sseClients.push(client);
-    console.log("SSE client connected:", client.id);
-
-    // Remove on disconnect
-    req.on("close", () => {
-        console.log("SSE client disconnected:", client.id);
-        sseClients = sseClients.filter(c => c.id !== client.id);
-    });
+// ===========================
+// START SERVER
+// ===========================
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
-
-
-// Helper to send event to all clients
-function sendSSEToAll(data) {
-    sseClients.forEach(client => {
-        client.res.write(`data: ${JSON.stringify(data)}\n\n`);
-    });
-}
