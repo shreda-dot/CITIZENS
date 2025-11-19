@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "https://your-backend-url.onrender.com/api", // Replace with your backend URL
+  baseURL: "https://citizens-3-7j4o.onrender.com/api",
   timeout: 5000,
 });
 
