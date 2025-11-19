@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -70,45 +71,48 @@ app.get("/api/incidents/stream", (req, res) => {
 
 // REGISTER
 app.post("/auth/register", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ message: "Email and password are required" });
+    const { email, password } = req.body;
+    if (!email || !password)
+        return res.status(400).json({ message: "Email and password are required" });
 
-  const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedEmail = String(email).trim().toLowerCase();
 
-  try {
-    const existingUser = await pool.query(
-      "SELECT 1 FROM users WHERE lower(email) = $1 LIMIT 1",
-      [normalizedEmail]
-    );
-    if (existingUser.rows.length > 0) {
-      const err = new Error("Email already exists");
-      err.code = "EMAIL_EXISTS";
-      throw err;
+    try {
+        // case-insensitive check
+        const existingUser = await pool.query(
+            "SELECT 1 FROM users WHERE lower(email) = $1 LIMIT 1",
+            [normalizedEmail]
+        );
+        if (existingUser.rows.length > 0) {
+            // Inform frontend that email exists so it can keep signup button in default state / not proceed
+            res.setHeader("X-Email-Exists", "true");
+            return res.status(409).json({ exists: true, message: "Email already exists" });
+        }
+
+        const hashedPassword = bcrypt.hashSync(password, 10);
+
+        const newUser = await pool.query(
+            "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email",
+            [normalizedEmail, hashedPassword]
+        );
+
+        const token = jwt.sign(
+            { id: newUser.rows[0].id, email: newUser.rows[0].email },
+            JWT_SECRET,
+            { expiresIn: "1h" }
+        );
+
+        res.status(201).json({ exists: false, token, message: "Registered" });
+    } catch (err) {
+        // handle unique constraint race (in case of concurrent requests)
+        if (err && err.code === "23505") {
+            res.setHeader("X-Email-Exists", "true");
+            return res.status(409).json({ exists: true, message: "Email already exists" });
+        }
+
+        console.error("REGISTER ERROR:", err);
+        res.status(500).json({ message: "Server error" });
     }
-
-    const hashedPassword = bcrypt.hashSync(password, 10);
-
-    const newUser = await pool.query(
-      "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email",
-      [normalizedEmail, hashedPassword]
-    );
-
-    const token = jwt.sign(
-      { id: newUser.rows[0].id, email: newUser.rows[0].email },
-      JWT_SECRET,
-      { expiresIn: "1h" }
-    );
-
-    res.status(201).json({ exists: false, token, message: "Registered" });
-  } catch (err) {
-    if (err && (err.code === "EMAIL_EXISTS" || err.code === "23505")) {
-      res.setHeader("X-Email-Exists", "true");
-      return res.status(409).json({ exists: true, message: "Email already exists" });
-    }
-    console.error("REGISTER ERROR:", err);
-    res.status(500).json({ message: "Server error" });
-  }
 });
 
 // LOGIN
@@ -117,17 +121,19 @@ app.post("/auth/login", async (req, res) => {
   if (!email || !password)
     return res.status(400).json({ message: "Email and password required" });
 
-  const normalizedEmail = String(email).trim().toLowerCase();
-
   try {
-    const userQuery = await pool.query("SELECT * FROM users WHERE lower(email) = $1", [normalizedEmail]);
+    const userQuery = await pool.query("SELECT * FROM users WHERE email=$1", [
+      email,
+    ]);
     const user = userQuery.rows[0];
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
     const isMatch = bcrypt.compareSync(password, user.password);
     if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: "1h" });
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, {
+      expiresIn: "1h",
+    });
 
     res.cookie("token", token, {
       httpOnly: true,
@@ -143,8 +149,53 @@ app.post("/auth/login", async (req, res) => {
   }
 });
 
+// HOME PAGE
+app.get("/home", (req, res) => {
+  const message = req.query.message || "";
+
+  const rawCookies = req.headers.cookie || "";
+  const cookies = rawCookies.split(";").reduce((acc, cookie) => {
+    const [k, v] = cookie.split("=").map((s) => s && s.trim());
+    if (k && v) acc[k] = decodeURIComponent(v);
+    return acc;
+  }, {});
+
+  let userInfo = null;
+  if (cookies.token) {
+    try {
+      userInfo = jwt.verify(cookies.token, JWT_SECRET);
+    } catch {}
+  }
+
+  res.send(`
+    <!doctype html>
+    <html>
+      <head><meta charset="utf-8"><title>Home</title></head>
+      <body>
+        <h1>${message || "Home"}</h1>
+        ${userInfo ? `<p>Welcome back, ${userInfo.email}!</p>` : "<p>You are not signed in.</p>"}
+      </body>
+    </html>
+  `);
+});
+
+// PROTECTED
+app.get("/protected", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ message: "No token provided" });
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    res.json({ message: "Protected data", user: decoded });
+  } catch {
+    res.status(401).json({ message: "Invalid token" });
+  }
+});
+
 // ===========================
-// INCIDENTS ROUTES
+// INCIDENTS
 // ===========================
 
 // Multer storage
@@ -171,6 +222,7 @@ app.post("/api/incidents", upload.array("images", 5), async (req, res) => {
     const { userId, type, title, description, location, latitude, longitude } = data;
     if (!type) return res.status(400).json({ message: "Type required" });
 
+    // Fix: convert JS array to Postgres array literal
     let pgImages = "{}";
     if (data.images.length > 0) {
       pgImages = `{${data.images.map((img) => `"${img}"`).join(",")}}`;
@@ -199,7 +251,9 @@ app.post("/api/incidents", upload.array("images", 5), async (req, res) => {
     const inc = incidentQuery.rows[0];
 
     if (inc.userId) {
-      const userQuery = await pool.query("SELECT email FROM users WHERE id=$1 LIMIT 1", [inc.userId]);
+      const userQuery = await pool.query("SELECT email FROM users WHERE id=$1 LIMIT 1", [
+        inc.userId,
+      ]);
       inc.userName = userQuery.rows[0]?.email || null;
     }
 
