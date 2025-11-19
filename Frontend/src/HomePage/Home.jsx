@@ -106,7 +106,7 @@ function Home() {
                             const data = await res.json();
                             setIncidents(Array.isArray(data) ? data : []);
                         } catch (err) {
-                            // setMessage('Load failed: ' + err.message);
+                            setMessage('Load failed: ' + err.message);
                         } finally {
                             setLoading(false);
                         }
@@ -160,7 +160,6 @@ function Home() {
                                 fd.append('location', form.location);
                                 if (form.latitude) fd.append('latitude', form.latitude);
                                 if (form.longitude) fd.append('longitude', form.longitude);
-                                if (user?.id) fd.append('userId', user.id);
                                 files.forEach((f, i) => fd.append('images', f, f.name));
                                 res = await fetch(`${BASE_URL}/api/incidents`, { // Use BASE_URL
                                     method: 'POST',
@@ -168,7 +167,6 @@ function Home() {
                                 });
                             } else {
                                 const payload = { ...form };
-                                if (user?.id) payload.userId = user.id;
                                 res = await fetch(`${BASE_URL}/api/incidents`, { // Use BASE_URL
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
@@ -234,8 +232,8 @@ function Home() {
                     const filtered = incidents.filter(inc => {
                         if (filterCategory !== 'All' && inc.type !== filterCategory) return false;
                         // Filter by user ID if 'Show Mine' is checked
-                        if (showMine && user) return inc.userId === user.id;
-                        if (showMine && !user) return false;
+                        // if (showMine && user) return inc.userId === user.id;
+                        // if (showMine && !user) return false;
                         return true;
                     });
 

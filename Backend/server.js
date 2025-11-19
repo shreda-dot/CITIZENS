@@ -230,11 +230,11 @@ app.post("/api/incidents", upload.array("images", 5), async (req, res) => {
     const incidentQuery = await pool.query(
       `
       INSERT INTO incidents 
-      (user_id, type, title, description, location, latitude, longitude, images)
+      ( type, title, description, location, latitude, longitude, images)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
       RETURNING 
         id, 
-        user_id AS "userId", 
+        // user_id AS "userId", 
         type, 
         title, 
         description, 
@@ -244,7 +244,7 @@ app.post("/api/incidents", upload.array("images", 5), async (req, res) => {
         images,
         created_at AS "createdAt"
       `,
-      [userId || null, type, title || "", description || "", location || "", latitude || null, longitude || null, pgImages]
+      [type, title || "", description || "", location || "", latitude || null, longitude || null, pgImages]
     );
 
     const inc = incidentQuery.rows[0];
