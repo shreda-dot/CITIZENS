@@ -5,7 +5,6 @@ const bodyParser = require("body-parser");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
-const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
@@ -282,9 +281,36 @@ app.get("/incidents", async (req, res) => {
 
 
 // -----------------------------
-
+// 3️⃣ SSE STREAM (REAL-TIME UPDATES)
 // -----------------------------
 
+// let sseClients = [];
+
+app.get("/events/incidents", (req, res) => {
+    res.set({
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*"
+    });
+
+    res.flushHeaders();
+
+    const client = {
+        id: Date.now(),
+        res
+    };
+
+    sseClients.push(client);
+    console.log("SSE client connected:", client.id);
+
+    // Remove on disconnect
+    req.on("close", () => {
+        console.log("SSE client disconnected:", client.id);
+        sseClients = sseClients.filter(c => c.id !== client.id);
+    });
+});
 
 
 // Helper to send event to all clients
