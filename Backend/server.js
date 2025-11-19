@@ -193,113 +193,130 @@ app.get("/protected", async (req, res) => {
   }
 });
 
-// ===========================
-// INCIDENTS
-// ===========================
+/// =============================
+// INCIDENT ROUTES
+// =============================
 
-// Multer storage
-const uploadDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+// Multer (for file uploads)
+const multer = require("multer");
+const path = require("path");
 
+// File storage configuration
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, unique + path.extname(file.originalname));
-  },
+    destination: function (req, file, cb) {
+        cb(null, "uploads/");
+    },
+    filename: function (req, file, cb) {
+        cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + path.extname(file.originalname));
+    }
 });
 
 const upload = multer({ storage });
 
-// CREATE INCIDENT
-app.post("/api/incidents", upload.array("images", 5), async (req, res) => {
-  try {
-    const isMultipart = req.files && req.files.length > 0;
-    let data = isMultipart ? req.body : req.body;
-    data.images = isMultipart ? req.files.map((f) => "/uploads/" + f.filename) : [];
+// -----------------------------
+// 1️⃣ CREATE INCIDENT (POST)
+// -----------------------------
+app.post("/incidents", upload.array("images", 5), async (req, res) => {
+    try {
+        const { user_id, title, category, description, location_name, latitude, longitude } = req.body;
 
-    const { userId, type, title, description, location, latitude, longitude } = data;
-    if (!type) return res.status(400).json({ message: "Type required" });
+        // Ensure user_id is provided
+        if (!user_id) {
+            return res.status(400).json({ message: "user_id is required" });
+        }
 
-    // Fix: convert JS array to Postgres array literal
-    let pgImages = "{}";
-    if (data.images.length > 0) {
-      pgImages = `{${data.images.map((img) => `"${img}"`).join(",")}}`;
+        // Convert uploaded images → array of paths
+        const imagePaths = req.files ? req.files.map(f => "/uploads/" + f.filename) : [];
+
+        // Insert into DB
+        const query = `
+        INSERT INTO incidents 
+        (user_id, title, category, description, location_name, latitude, longitude, images)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *;
+        `;
+
+        const values = [
+            user_id,
+            title,
+            category,
+            description,
+            location_name,
+            latitude,
+            longitude,
+            imagePaths
+        ];
+
+        const result = await pool.query(query, values);
+        const newIncident = result.rows[0];
+
+        // Broadcast to SSE clients
+        sendSSEToAll({
+            type: "new_incident",
+            data: newIncident
+        });
+
+        return res.json({ success: true, incident: newIncident });
     }
 
-    const incidentQuery = await pool.query(
-      `
-      INSERT INTO incidents 
-      (user_id, type, title, description, location, latitude, longitude, images)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-      RETURNING 
-        id, 
-        user_id AS "userId", 
-        type, 
-        title, 
-        description, 
-        location, 
-        latitude, 
-        longitude, 
-        images,
-        created_at AS "createdAt"
-      `,
-      [userId || null, type, title || "", description || "", location || "", latitude || null, longitude || null, pgImages]
-    );
-
-    const inc = incidentQuery.rows[0];
-
-    if (inc.userId) {
-      const userQuery = await pool.query("SELECT email FROM users WHERE id=$1 LIMIT 1", [
-        inc.userId,
-      ]);
-      inc.userName = userQuery.rows[0]?.email || null;
+    catch (err) {
+        console.error("INCIDENT CREATE ERROR:", err);
+        return res.status(500).json({ message: "Server error" });
     }
-
-    // SSE broadcast
-    broadcastIncident(inc);
-
-    res.status(201).json(inc);
-  } catch (err) {
-    console.error("INCIDENT CREATE ERROR:", err);
-    res.status(500).json({ message: "Server error" });
-  }
 });
 
-// GET INCIDENTS
-app.get("/api/incidents", async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        id, 
-        user_id AS "userId",
-        type, 
-        title, 
-        description, 
-        location, 
-        latitude, 
-        longitude, 
-        images,
-        created_at AS "createdAt"
-      FROM incidents
-      ORDER BY created_at DESC
-    `);
 
-    const incidents = result.rows.map((row) => ({
-      ...row,
-      images: row.images || [],
-    }));
-
-    res.json(incidents);
-  } catch (err) {
-    console.error("INCIDENT GET ERROR:", err);
-    res.status(500).json({ message: "Server error" });
-  }
+// -----------------------------
+// 2️⃣ GET ALL INCIDENTS (GET)
+// -----------------------------
+app.get("/incidents", async (req, res) => {
+    try {
+        const result = await pool.query(`SELECT * FROM incidents ORDER BY created_at DESC`);
+        return res.json(result.rows);
+    }
+    catch (err) {
+        console.error("INCIDENT FETCH ERROR:", err);
+        res.status(500).json({ message: "Server error" });
+    }
 });
 
-// ===========================
-// START SERVER
-// ===========================
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+
+// -----------------------------
+// 3️⃣ SSE STREAM (REAL-TIME UPDATES)
+// -----------------------------
+
+// let sseClients = [];
+
+app.get("/events/incidents", (req, res) => {
+    res.set({
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*"
+    });
+
+    res.flushHeaders();
+
+    const client = {
+        id: Date.now(),
+        res
+    };
+
+    sseClients.push(client);
+    console.log("SSE client connected:", client.id);
+
+    // Remove on disconnect
+    req.on("close", () => {
+        console.log("SSE client disconnected:", client.id);
+        sseClients = sseClients.filter(c => c.id !== client.id);
+    });
 });
+
+
+// Helper to send event to all clients
+function sendSSEToAll(data) {
+    sseClients.forEach(client => {
+        client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+    });
+}
