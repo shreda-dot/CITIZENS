@@ -5,24 +5,27 @@ import { useNavigate, Link } from "react-router-dom";
 
 const Login = () => {
     const navigate = useNavigate();
+
     const [userdata, setUserData] = useState({ email: "", password: "" });
     const [errors, setErrors] = useState({ email: "", password: "" });
     const [isFormValid, setIsFormValid] = useState(false);
-    const [loginMessage, setLoginMessage] = useState(""); // State for login message
+
+    const [loginMessage, setLoginMessage] = useState("");
+    const [loginError, setLoginError] = useState("");
 
     // Live validation
     useEffect(() => {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
         const emailError =
-            userdata.email.length === 0
+            userdata.email.trim().length === 0
                 ? "Email is required"
                 : !emailRegex.test(userdata.email)
                 ? "Invalid email format"
                 : "";
 
         const passwordError =
-            userdata.password.length === 0
+            userdata.password.trim().length === 0
                 ? "Password is required"
                 : userdata.password.length < 6
                 ? "Password must be at least 6 characters"
@@ -34,6 +37,10 @@ const Login = () => {
 
     const handleChange = (e) => {
         setUserData({ ...userdata, [e.target.name]: e.target.value });
+
+        // Clear error messages when user starts typing
+        setLoginError("");
+        setLoginMessage("");
     };
 
     const handleSubmit = async (e) => {
@@ -42,14 +49,26 @@ const Login = () => {
 
         try {
             const res = await api.post("/auth/login", userdata);
+
+            // Backend success → store token
             localStorage.setItem("token", res.data.token);
-            setLoginMessage("Welcome back!"); // Set welcome message
-            navigate("/home"); // Redirect after login
+
+            setLoginError(""); // clear previous errors  
+            setLoginMessage("Welcome back!");
+
+            // Small delay for UX
+            setTimeout(() => {
+                navigate("/home");
+            }, 500);
         } catch (err) {
             if (err instanceof AxiosError) {
-                setLoginMessage(err.response?.data.message || "Login failed"); // Set error message
+                const msg = err.response?.data?.message || "Login failed";
+
+                setLoginMessage(""); // remove success message
+                setLoginError(msg);  // show red error
+
             } else {
-                console.error(err);
+                setLoginError("An unexpected error occurred.");
             }
         }
     };
@@ -61,7 +80,15 @@ const Login = () => {
         >
             <h1 className="text-2xl font-bold text-center">Login Page</h1>
 
-            {loginMessage && <p className="text-xs text-green-500 text-center">{loginMessage}</p>} {/* Display message */}
+            {/* Success */}
+            {loginMessage && (
+                <p className="text-xs text-green-600 text-center">{loginMessage}</p>
+            )}
+
+            {/* Error */}
+            {loginError && (
+                <p className="text-xs text-red-600 text-center">{loginError}</p>
+            )}
 
             <div>
                 <input
@@ -92,7 +119,7 @@ const Login = () => {
             <Link to="/forgot" className="text-xs text-emerald-500 hover:underline">
                 Forgotten Password?
             </Link>
-                
+
             <button
                 type="submit"
                 disabled={!isFormValid}

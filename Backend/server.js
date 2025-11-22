@@ -1,5 +1,5 @@
 
-require("dotenv").config();
+// require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
@@ -71,75 +71,94 @@ app.get("/api/incidents/stream", (req, res) => {
 
 // REGISTER
 app.post("/auth/register", async (req, res) => {
-    const { email, password } = req.body;
-    if (!email || !password)
-        return res.status(400).json({ message: "Email and password are required" });
+  const { email, password } = req.body;
 
-    const normalizedEmail = String(email).trim().toLowerCase();
+  if (!email || !password)
+    return res.status(400).json({ message: "Email and password are required" });
 
-    try {
-        // case-insensitive check
-        const existingUser = await pool.query(
-            "SELECT 1 FROM users WHERE lower(email) = $1 LIMIT 1",
-            [normalizedEmail]
-        );
-        if (existingUser.rows.length > 0) {
-            // Inform frontend that email exists so it can keep signup button in default state / not proceed
-            res.setHeader("X-Email-Exists", "true");
-            return res.status(409).json({ exists: true, message: "Email already exists" });
-        }
+  const normalizedEmail = String(email).trim().toLowerCase();
 
-        const hashedPassword = bcrypt.hashSync(password, 10);
+  try {
+    const existing = await pool.query(
+      "SELECT 1 FROM users WHERE lower(email) = $1 LIMIT 1",
+      [normalizedEmail]
+    );
 
-        const newUser = await pool.query(
-            "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email",
-            [normalizedEmail, hashedPassword]
-        );
-
-        const token = jwt.sign(
-            { id: newUser.rows[0].id, email: newUser.rows[0].email },
-            JWT_SECRET,
-            { expiresIn: "1h" }
-        );
-
-        res.status(201).json({ exists: false, token, message: "Registered" });
-    } catch (err) {
-        // handle unique constraint race (in case of concurrent requests)
-        if (err && err.code === "23505") {
-            res.setHeader("X-Email-Exists", "true");
-            return res.status(409).json({ exists: true, message: "Email already exists" });
-        }
-
-        console.error("REGISTER ERROR:", err);
-        res.status(500).json({ message: "Server error" });
+    if (existing.rows.length > 0) {
+      return res.status(409).json({
+        exists: true,
+        message: "Email already exists"
+      });
     }
+
+    const hashed = bcrypt.hashSync(password, 10);
+
+    const result = await pool.query(
+      "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email",
+      [normalizedEmail, hashed]
+    );
+
+    const token = jwt.sign(
+      { id: result.rows[0].id, email: result.rows[0].email },
+      JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    res.status(201).json({
+      exists: false,
+      token,
+      message: "Registered successfully"
+    });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({
+        exists: true,
+        message: "Email already exists"
+      });
+    }
+
+    console.error("REGISTER ERROR:", err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
+
 
 // LOGIN
 app.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
+
   if (!email || !password)
     return res.status(400).json({ message: "Email and password required" });
 
+  const normalizedEmail = String(email).trim().toLowerCase();
+
   try {
-    const userQuery = await pool.query("SELECT * FROM users WHERE email=$1", [
-      email,
-    ]);
-    const user = userQuery.rows[0];
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    const query = await pool.query(
+      "SELECT * FROM users WHERE lower(email) = $1 LIMIT 1",
+      [normalizedEmail]
+    );
+
+    const user = query.rows[0];
+
+    if (!user)
+      return res.status(401).json({ message: "Invalid credentials" });
 
     const isMatch = bcrypt.compareSync(password, user.password);
-    if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    if (!isMatch)
+      return res.status(401).json({ message: "Invalid credentials" });
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 60 * 60 * 1000, // 1 hour
+      maxAge: 60 * 60 * 1000,
     });
 
     res.status(200).json({ token, message: "Welcome back" });
@@ -148,6 +167,7 @@ app.post("/auth/login", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // HOME PAGE
 app.get("/home", (req, res) => {
