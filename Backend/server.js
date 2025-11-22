@@ -21,7 +21,10 @@ if (!process.env.JWT_SECRET && process.env.NODE_ENV === "production") {
   process.exit(1);
 }
 
-app.use(cors());
+app.use(cors(
+ { origin: "https://citizens-3-7j4o.onrender.com",  
+  credentials: true}
+));
 app.use(bodyParser.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads"))); // serve uploaded images
 
@@ -167,6 +170,25 @@ app.post("/auth/login", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+// GET CURRENT USER
+app.get("/api/me", (req, res) => {
+  const rawCookies = req.headers.cookie || "";
+  const cookies = rawCookies.split(";").reduce((acc, cookie) => {
+    const [k, v] = cookie.split("=").map((s) => s && s.trim());
+    if (k && v) acc[k] = decodeURIComponent(v);
+    return acc;
+  }, {});
+
+  if (!cookies.token) return res.status(401).json({ message: "Not authenticated" });
+
+  try {
+    const user = jwt.verify(cookies.token, JWT_SECRET);
+    res.json({ id: user.id, email: user.email });
+  } catch (err) {
+    res.status(401).json({ message: "Invalid token" });
+  }
+});
+
 
 
 // HOME PAGE
